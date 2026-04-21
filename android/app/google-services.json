@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "287638238391",
+    "project_id": "crisisai-730dc",
+    "storage_bucket": "crisisai-730dc.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:287638238391:android:9dcf87ca7c976d27d14932",
+        "android_client_info": {
+          "package_name": "com.example.crisis_ai"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB3CCj84gDc0xTVQ20hGfMk1CsP_UE2Csc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
