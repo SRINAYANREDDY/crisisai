@@ -789,7 +789,7 @@ class AppModeController {
 class NetworkChecker {
   static bool _isOnline = true;
   static DateTime? _lastCheck;
-  static const _checkInterval = Duration(seconds: 15);
+  static const _checkInterval = Duration(seconds: 8);
 
   static bool get isOnline => _isOnline;
 
@@ -804,14 +804,27 @@ class NetworkChecker {
       return _isOnline;
     }
     _lastCheck = now;
+
+    // Use a real HTTP request — DNS lookup alone is unreliable on Android
+    // (corporate Wi-Fi, VPNs, and firewall rules can resolve DNS but block
+    // actual traffic, or vice-versa). We hit Google's generate endpoint with
+    // a tiny HEAD-style GET; a 400/403/429 still proves the network is UP.
     try {
-      final result = await InternetAddress.lookup(
-        'generativelanguage.googleapis.com',
-      ).timeout(const Duration(seconds: 5));
-      _isOnline = result.isNotEmpty && result.first.rawAddress.isNotEmpty;
+      final response = await http
+          .get(
+            Uri.parse(
+              'https://generativelanguage.googleapis.com/v1beta/models'
+              '?key=invalid_connectivity_probe',
+            ),
+          )
+          .timeout(const Duration(seconds: 6));
+      // Any HTTP response (even 400 Bad Request) means the network is reachable
+      _isOnline = response.statusCode > 0;
     } on SocketException catch (_) {
       _isOnline = false;
     } on TimeoutException catch (_) {
+      _isOnline = false;
+    } on http.ClientException catch (_) {
       _isOnline = false;
     } catch (_) {
       _isOnline = false;
@@ -1034,8 +1047,8 @@ class OfflineAIResponse {
   });
 
   String get sourceLabel => switch (source) {
-    AIResponseSource.geminiOnline => 'Gemini AI',
-    AIResponseSource.offlineProtocol => 'Offline Protocol',
-    AIResponseSource.offlineFallback => 'Offline Fallback',
-  };
+        AIResponseSource.geminiOnline => 'Gemini AI',
+        AIResponseSource.offlineProtocol => 'Offline Protocol',
+        AIResponseSource.offlineFallback => 'Offline Fallback',
+      };
 }

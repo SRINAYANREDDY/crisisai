@@ -8,14 +8,17 @@ import 'consts.dart';
 import 'trauma_check_service.dart'; // Feature 2 — post-mission trauma check trigger
 
 // ─────────────────────────────────────────────
-// GEMINI SERVICE WITH CACHING
+// GEMINI SERVICE — LIVE API (NO BROKEN CACHE)
+// Every question gets a fresh answer from Gemini.
+// Conversation history is passed so follow-up
+// questions get contextual replies.
+// Key rotation fires automatically on 429/quota.
 // ─────────────────────────────────────────────
 
 class GeminiService {
-  static final Map<String, String> _memoryCache = {};
+  // No cache — every call goes to the API so answers are always fresh.
   static SharedPreferences? _prefs;
 
-  // Primary and fallback model names (key is appended by GeminiKeyManager)
   static const _primaryModel = 'gemini-2.0-flash';
   static const _fallbackModel = 'gemini-1.5-flash';
   static const _baseUrl =
@@ -23,133 +26,201 @@ class GeminiService {
 
   static Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
-    final cachedKeys = _prefs?.getKeys() ?? {};
-    for (var key in cachedKeys) {
-      if (key.startsWith('gemini_')) {
-        final cachedResponse = _prefs!.getString(key);
-        if (cachedResponse != null) _memoryCache[key] = cachedResponse;
-      }
+    // Clear any stale cached responses from the old caching logic
+    // so users never see a permanently frozen answer again.
+    final staleKeys = (_prefs?.getKeys() ?? {})
+        .where((k) => k.startsWith('gemini_'))
+        .toList();
+    for (final k in staleKeys) {
+      await _prefs?.remove(k);
     }
   }
 
+  // ── Single-turn: initial topic content load ──────────────────────────────
+  // Called once when the chat screen opens to generate the first message.
   static Future<String> generateContent(String topic, String type) async {
     try {
-      final safeLen = topic.length > 80 ? 80 : topic.length;
-      final cacheKey =
-          'gemini_${type}_${topic.replaceAll(' ', '_').replaceAll('\n', '_').substring(0, safeLen)}';
-      if (_memoryCache.containsKey(cacheKey)) return _memoryCache[cacheKey]!;
-      final diskCached = _prefs?.getString(cacheKey);
-      if (diskCached != null && diskCached.isNotEmpty) {
-        _memoryCache[cacheKey] = diskCached;
-        return diskCached;
-      }
       final prompt = _getPromptForTopic(topic, type);
       if (prompt.isEmpty) return 'Error: Prompt is empty';
 
-      // Try every available API key before giving up
-      final result = await _callWithKeyRotation(prompt);
+      final result = await _callWithKeyRotation(
+        contents: [
+          {
+            'role': 'user',
+            'parts': [
+              {'text': prompt}
+            ],
+          },
+        ],
+      );
 
-      if (result != null &&
-          result.isNotEmpty &&
-          !result.startsWith('API Error') &&
-          !result.startsWith('Error:')) {
-        _memoryCache[cacheKey] = result;
-        await _prefs?.setString(cacheKey, result);
-        return result;
-      }
-      // All keys exhausted — route to offline protocol database
-      if (result == null || result.isEmpty) {
-        return _getOfflineProtocolResponse(topic);
-      }
-      return result;
+      if (result != null && result.isNotEmpty) return result;
+      return _getOfflineProtocolResponse(topic);
     } on TimeoutException {
-      return 'Error: Request timed out. Please check your internet connection and try again.';
+      return 'Error: Request timed out. Please check your internet connection.';
     } catch (e) {
       final msg = e.toString();
       if (msg.contains('SocketException') ||
           msg.contains('Connection refused') ||
           msg.contains('Network is unreachable')) {
-        return 'Error: No internet connection. Please check your network and try again.';
+        return 'Error: No internet connection. Please check your network.';
       }
       if (msg.contains('HandshakeException') || msg.contains('CERTIFICATE')) {
-        return 'Error: SSL/TLS connection failed. Please check your network settings.';
+        return 'Error: SSL/TLS connection failed.';
       }
       return 'Error: $msg';
     }
   }
 
-  /// Tries primary then fallback model on each key in sequence.
-  /// Rotates key on quota/rate-limit. Returns null only when truly exhausted.
-  static Future<String?> _callWithKeyRotation(String prompt) async {
+  // ── Multi-turn: follow-up questions with full conversation history ────────
+  // Pass ALL previous messages so Gemini understands context.
+  // chatHistory format: list of ChatMessage objects from _GeminiChatScreenState.
+  static Future<String> generateReply({
+    required String topic,
+    required String blockType,
+    required List<ChatMessage> chatHistory,
+    required String newUserMessage,
+  }) async {
+    try {
+      // Build the system context as the very first user turn
+      final systemPrompt = _getPromptForTopic(topic, blockType);
+
+      // Convert full chat history to Gemini's multi-turn 'contents' format.
+      // Gemini requires alternating user/model roles — we map isUser to role.
+      final contents = <Map<String, dynamic>>[
+        // First turn: the system/topic prompt as a user message
+        {
+          'role': 'user',
+          'parts': [
+            {'text': systemPrompt}
+          ],
+        },
+        // Second turn: a model acknowledgement so the alternation is correct
+        {
+          'role': 'model',
+          'parts': [
+            {
+              'text':
+                  'Understood. I am ready to answer questions about this topic as a disaster response training assistant.'
+            }
+          ],
+        },
+      ];
+
+      // Append every message already in the chat
+      for (final msg in chatHistory) {
+        contents.add({
+          'role': msg.isUser ? 'user' : 'model',
+          'parts': [
+            {'text': msg.text}
+          ],
+        });
+      }
+
+      // Append the new question the user just typed
+      contents.add({
+        'role': 'user',
+        'parts': [
+          {'text': newUserMessage}
+        ],
+      });
+
+      final result = await _callWithKeyRotation(contents: contents);
+
+      if (result != null && result.isNotEmpty) return result;
+      return _getOfflineProtocolResponse(newUserMessage);
+    } on TimeoutException {
+      return 'Error: Request timed out. Please check your internet connection.';
+    } catch (e) {
+      final msg = e.toString();
+      if (msg.contains('SocketException') ||
+          msg.contains('Connection refused') ||
+          msg.contains('Network is unreachable')) {
+        return 'Error: No internet connection. Please check your network.';
+      }
+      return 'Error: $msg';
+    }
+  }
+
+  // ── Key rotation loop ─────────────────────────────────────────────────────
+  // Tries every API key before giving up. Rotates on 429 / quota signals.
+  static Future<String?> _callWithKeyRotation({
+    required List<Map<String, dynamic>> contents,
+  }) async {
     final manager = GeminiKeyManager.instance;
     final totalKeys = manager.totalKeys;
 
     for (int attempt = 0; attempt < totalKeys; attempt++) {
       // Try primary model first
-      String? result = await _callGeminiApi(_primaryModel, prompt);
+      String? result = await _callGeminiApi(_primaryModel, contents);
 
-      // null = model not found / network issue — try fallback model immediately
+      // Model not found (404) — try fallback immediately on same key
       if (result == null) {
-        result = await _callGeminiApi(_fallbackModel, prompt);
+        result = await _callGeminiApi(_fallbackModel, contents);
       }
 
-      // Quota on primary — try fallback with same key
+      // Quota on primary — try fallback model on same key
       if (result == _kQuotaSignal) {
-        result = await _callGeminiApi(_fallbackModel, prompt);
+        result = await _callGeminiApi(_fallbackModel, contents);
       }
 
       // Still quota after both models — rotate to next key
       if (result == _kQuotaSignal) {
         debugPrint(
-          '[GeminiService] Key #${manager.currentIndex} quota — rotating.',
+          '[GeminiService] Key #${manager.currentIndex} quota — rotating to next key.',
         );
         final hasNext = manager.rotateKey();
-        if (!hasNext) break;
+        if (!hasNext) {
+          debugPrint(
+              '[GeminiService] All ${manager.totalKeys} keys exhausted.');
+          break;
+        }
         await Future.delayed(const Duration(milliseconds: 300));
         continue;
       }
 
-      // Got a real result (good response or an API error string)
+      // Got a valid response
       if (result != null && result.isNotEmpty) return result;
 
-      // Both models returned null — rotate key and try again
+      // Both models returned null (network issue) — rotate and retry
       debugPrint(
-        '[GeminiService] Key #${manager.currentIndex} null — rotating.',
+        '[GeminiService] Key #${manager.currentIndex} returned null — rotating.',
       );
       final hasNext = manager.rotateKey();
       if (!hasNext) break;
       await Future.delayed(const Duration(milliseconds: 300));
     }
 
-    return null; // fully exhausted — caller routes to offline protocols
+    return null;
   }
 
-  // Sentinel value returned internally when a 429/quota response is received.
   static const _kQuotaSignal = '__QUOTA_EXCEEDED__';
 
-  static Future<String?> _callGeminiApi(String model, String prompt) async {
+  // ── Single API call ───────────────────────────────────────────────────────
+  static Future<String?> _callGeminiApi(
+    String model,
+    List<Map<String, dynamic>> contents,
+  ) async {
     try {
       final key = GeminiKeyManager.instance.currentKey;
       final uri = Uri.parse('$_baseUrl/$model:generateContent?key=$key');
+
       final body = jsonEncode({
-        'contents': [
-          {
-            'parts': [
-              {'text': prompt},
-            ],
-          },
-        ],
-        'generationConfig': {'temperature': 0.7, 'maxOutputTokens': 1024},
+        'contents': contents,
+        'generationConfig': {
+          'temperature': 0.7,
+          'maxOutputTokens': 1024,
+        },
         'safetySettings': [
           {'category': 'HARM_CATEGORY_HARASSMENT', 'threshold': 'BLOCK_NONE'},
           {'category': 'HARM_CATEGORY_HATE_SPEECH', 'threshold': 'BLOCK_NONE'},
           {
             'category': 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
-            'threshold': 'BLOCK_NONE',
+            'threshold': 'BLOCK_NONE'
           },
           {
             'category': 'HARM_CATEGORY_DANGEROUS_CONTENT',
-            'threshold': 'BLOCK_NONE',
+            'threshold': 'BLOCK_NONE'
           },
         ],
       });
@@ -160,9 +231,9 @@ class GeminiService {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
-        // Check for quota error embedded in a 200 body
-        final errorMsg = (data['error']?['message'] as String? ?? '')
-            .toLowerCase();
+        // Quota error can arrive as a 200 with an error body
+        final errorMsg =
+            (data['error']?['message'] as String? ?? '').toLowerCase();
         if (errorMsg.contains('quota') || errorMsg.contains('rate')) {
           return _kQuotaSignal;
         }
@@ -170,12 +241,11 @@ class GeminiService {
         if (finishReason == 'SAFETY') {
           return 'Content was blocked by safety filters. Please rephrase your question.';
         }
-        final text =
-            data['candidates']?[0]?['content']?['parts']?[0]?['text']
-                as String?;
+        final text = data['candidates']?[0]?['content']?['parts']?[0]?['text']
+            as String?;
         return text;
       } else if (response.statusCode == 429 || response.statusCode == 503) {
-        return _kQuotaSignal; // signal rotation
+        return _kQuotaSignal;
       } else if (response.statusCode == 400) {
         try {
           final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -185,9 +255,9 @@ class GeminiService {
           return 'API Error (400): Bad request. Check your API key.';
         }
       } else if (response.statusCode == 403) {
-        return 'API Error (403): Access denied. Your API key may be invalid or restricted.';
+        return 'API Error (403): Access denied. API key may be invalid or restricted.';
       } else if (response.statusCode == 404) {
-        return null; // model not found — let caller try fallback model
+        return null; // model not found — caller tries fallback model
       } else {
         try {
           final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -326,25 +396,86 @@ _Reconnect to internet for full AI guidance._''';
   }
 
   static String _getPromptForTopic(String topic, String type) {
+    // Timestamp seeds every call so Gemini returns fresh, varied responses.
+    final ts = DateTime.now().millisecondsSinceEpoch;
+
     switch (type) {
       case 'basic':
-        return 'Provide comprehensive training content for Emergency Disaster Response volunteers about "$topic". Include: 1) Definition and importance, 2) Key concepts, 3) Real-world applications in India, 4) Step-by-step guide, 5) Common mistakes to avoid. Format as clear sections with bullet points. Keep it practical and actionable.';
+        return 'You are a disaster response trainer for Indian volunteers (session:$ts). '
+            'Topic: "$topic". '
+            'Give a fresh, practical training brief. '
+            'Structure: What it is → Why it matters in India (cyclones/floods/heatwaves) → '
+            'Numbered volunteer-actionable steps → '
+            'One real Indian disaster example where this mattered → '
+            'The single most common fatal mistake to avoid. '
+            'Be direct and specific. No filler.';
       case 'survival':
-        return 'Create detailed survival training content for "$topic" in disaster scenarios. Include: 1) Why this skill is critical, 2) Equipment needed, 3) Step-by-step instructions, 4) Safety precautions, 5) Common mistakes, 6) Tips for different conditions. Use real examples from Indian disaster events.';
+        return 'You are a survival instructor for Indian disaster zones (session:$ts). '
+            'Skill: "$topic". Teach as if the volunteer is in the field RIGHT NOW. '
+            'Cover: Why critical → Materials available locally in India → '
+            'Numbered technique steps → '
+            'Indian climate adaptation (monsoon/heat/coastal/mountain) → '
+            'Failure signs and what to do next. '
+            'Use one real Indian disaster example (Chennai floods, Uttarakhand, Odisha cyclone).';
       case 'medical':
-        return 'Provide medical training content for "$topic" for disaster response. Include: 1) When and why this is needed, 2) Proper technique with steps, 3) Equipment required, 4) Warning signs to watch for, 5) What to do next, 6) Common errors.';
+        return 'You are a field medic trainer for non-medical Indian volunteers (session:$ts). '
+            'Procedure: "$topic". The volunteer has basic training only. '
+            'Cover: Exact trigger signs → Numbered steps (no jargon) → '
+            'Critical DON\'Ts that kill or worsen outcomes → '
+            'Specific threshold for calling 108 → '
+            'What volunteer does while waiting for ambulance. '
+            'Note child vs adult vs elderly differences where relevant.';
       case 'fire':
-        return 'Create fire safety and rescue training content for "$topic". Include: 1) Fire classification and behavior, 2) Safety protocols, 3) Equipment and tools, 4) Step-by-step procedures, 5) Hazard identification, 6) Emergency exit procedures.';
+        return 'You are a fire safety trainer for Indian emergency volunteers (session:$ts). '
+            'Topic: "$topic". India context: LPG cylinders, dense housing, power cuts. '
+            'Cover: Fire type and behaviour → Evacuation protocol → '
+            'Equipment realistically available in Indian buildings → '
+            'Numbered procedure steps → '
+            'Top 3 fatal mistakes in Indian fire incidents → '
+            'Post-fire gas/re-entry safety check.';
       case 'rescue':
-        return 'Provide comprehensive rescue operation training for "$topic". Include: 1) Scenario assessment, 2) Pre-rescue safety checks, 3) Equipment setup, 4) Step-by-step rescue procedure, 5) Victim handling, 6) Post-rescue care.';
+        return 'You are a rescue operations expert training Indian volunteers (session:$ts). '
+            'Scenario: "$topic". Brief this as a live operation. '
+            'Cover: 3 scene checks before touching anything → '
+            'Go/No-go: when to act vs wait for NDRF/112 → '
+            'Equipment setup with locally available items → '
+            'Numbered rescue steps with body positioning → '
+            'What to tell paramedics at handoff.';
       case 'puzzle':
-        return 'Explain the reasoning and correct answer for the emergency response puzzle: "$topic". Include: 1) Why this scenario is important, 2) The correct action and why, 3) What happens if you do the wrong thing, 4) Related protocols, 5) How to remember this in an emergency.';
+        return 'Emergency decision puzzle (session:$ts): "$topic". '
+            'Make this memorable for a volunteer who must recall it under stress. '
+            'Cover: Correct action stated upfront then explained WHY → '
+            'What physically happens with the wrong choice → '
+            'The underlying protocol rule → '
+            'A memory trick (acronym/analogy) → '
+            'One real-world variant they might face.';
       case 'drill':
-        return 'Provide comprehensive training for the emergency drill: "$topic". Include: 1) Drill objectives, 2) Roles and responsibilities, 3) Equipment needed, 4) Step-by-step execution, 5) Safety measures, 6) How to evaluate success, 7) Common challenges.';
+        return 'You are an expert emergency drill trainer for Indian disaster response volunteers (session:$ts). '
+            'Here is the full drill information:\n\n$topic\n\n'
+            'Explain this drill thoroughly as if you are briefing the team right now. Cover ALL of the following:\n'
+            '1. PURPOSE — What this drill trains and why it is critical for Indian disaster scenarios.\n'
+            '2. STEP-BY-STEP WALKTHROUGH — Explain each listed step in detail: exactly what to do, how to do it correctly, and the most common mistake at that step.\n'
+            '3. ROLE ASSIGNMENTS — Who does what during this drill (team leader, medic, communicator, recorder, safety officer).\n'
+            '4. TIMING — How to pace each step to finish within the allotted duration.\n'
+            '5. EQUIPMENT — Every tool and material needed, in order of use, and how to operate each.\n'
+            '6. SUCCESS CRITERIA — The exact signs that tell the team they have passed this drill.\n'
+            '7. TOP 3 MISTAKES — The most common errors teams make in this drill type and how to prevent them.\n'
+            '8. INDIA CONTEXT — Specific considerations for Indian conditions: monsoon, extreme heat, dense populations, NDRF coordination, and locally available resources.\n'
+            'Be specific, practical, and energetic. Every sentence must be actionable. No generic filler.';
       case 'combined':
-        return 'Explain the multi-agency disaster response for: "$topic". Include: 1) Scenario overview, 2) Roles of each agency (Fire, Police, Medical, NDRF), 3) Coordination points, 4) Timeline and priorities, 5) Critical decision points, 6) Post-incident review.';
+        return 'Multi-agency disaster response briefing (session:$ts): "$topic". '
+            'For a volunteer coordinator working alongside professionals. '
+            'Cover: Scenario scale and environment → '
+            'Agency roles: Fire/Police/108 Ambulance/NDRF/volunteers — who owns what → '
+            'Exact volunteer lane (what they do, not professionals) → '
+            'The 3 handoff moments where coordination breaks down → '
+            'Congested-network communication protocol → '
+            'When and how volunteers stand down safely.';
       default:
-        return 'Provide comprehensive emergency disaster response training content about "$topic". Include practical, actionable information with examples relevant to Indian disaster scenarios.';
+        return 'Emergency training (session:$ts): "$topic". '
+            'Train an Indian disaster response volunteer for this situation. '
+            'Use numbered steps, be specific, include one India-relevant example, '
+            'and one critical mistake to avoid. No generic filler — every sentence must be actionable.';
     }
   }
 }
@@ -413,9 +544,13 @@ class _GeminiChatScreenState extends State<GeminiChatScreen> {
   }
 
   void _sendMessage() async {
-    if (_messageController.text.isEmpty) return;
-    final userMessage = _messageController.text;
+    if (_messageController.text.trim().isEmpty) return;
+    final userMessage = _messageController.text.trim();
     _messageController.clear();
+
+    // Snapshot history BEFORE adding the new user message
+    final historySnapshot = List<ChatMessage>.from(_messages);
+
     setState(() {
       _messages.add(
         ChatMessage(text: userMessage, isUser: true, timestamp: DateTime.now()),
@@ -423,10 +558,15 @@ class _GeminiChatScreenState extends State<GeminiChatScreen> {
       _isLoading = true;
     });
     _scrollToBottom();
-    final response = await GeminiService.generateContent(
-      '$userMessage\n\nContext: This is about ${widget.topic}',
-      widget.blockType,
+
+    // Pass full conversation history so Gemini answers in context
+    final response = await GeminiService.generateReply(
+      topic: widget.topic,
+      blockType: widget.blockType,
+      chatHistory: historySnapshot,
+      newUserMessage: userMessage,
     );
+
     if (mounted) {
       setState(() {
         _messages.add(
@@ -567,9 +707,8 @@ class _GeminiChatScreenState extends State<GeminiChatScreen> {
                     width: 48,
                     height: 48,
                     decoration: BoxDecoration(
-                      color: _isLoading
-                          ? const Color(0xFFD0CCC6)
-                          : widget.color,
+                      color:
+                          _isLoading ? const Color(0xFFD0CCC6) : widget.color,
                       shape: BoxShape.circle,
                     ),
                     child: const Icon(
@@ -605,9 +744,8 @@ class _ChatBubble extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
-        mainAxisAlignment: message.isUser
-            ? MainAxisAlignment.end
-            : MainAxisAlignment.start,
+        mainAxisAlignment:
+            message.isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
         children: [
           Flexible(
             child: Container(
@@ -619,9 +757,8 @@ class _ChatBubble extends StatelessWidget {
               child: SelectableText(
                 message.text,
                 style: TextStyle(
-                  color: message.isUser
-                      ? Colors.white
-                      : const Color(0xFF1A1A1A),
+                  color:
+                      message.isUser ? Colors.white : const Color(0xFF1A1A1A),
                   fontSize: 13,
                   height: 1.5,
                 ),
@@ -1999,11 +2136,10 @@ class _AnimatedVideoPlayerState extends State<AnimatedVideoPlayer>
                                   shape: BoxShape.circle,
                                   boxShadow: [
                                     BoxShadow(
-                                      color:
-                                          (_isCompleted
-                                                  ? const Color(0xFF3D7A3A)
-                                                  : widget.color)
-                                              .withOpacity(0.4),
+                                      color: (_isCompleted
+                                              ? const Color(0xFF3D7A3A)
+                                              : widget.color)
+                                          .withOpacity(0.4),
                                       blurRadius: 12,
                                     ),
                                   ],
@@ -2417,8 +2553,8 @@ class _VideoPlayerModalState extends State<VideoPlayerModal>
                                   _isCompleted
                                       ? Icons.check_rounded
                                       : (_isPlaying
-                                            ? Icons.pause_rounded
-                                            : Icons.play_arrow_rounded),
+                                          ? Icons.pause_rounded
+                                          : Icons.play_arrow_rounded),
                                   color: _isCompleted
                                       ? Colors.white
                                       : const Color(0xFF111111),
@@ -2475,9 +2611,8 @@ class _VideoPlayerModalState extends State<VideoPlayerModal>
                                   Row(
                                     children: [
                                       GestureDetector(
-                                        onTap: _isCompleted
-                                            ? null
-                                            : _togglePlay,
+                                        onTap:
+                                            _isCompleted ? null : _togglePlay,
                                         child: Icon(
                                           _isPlaying
                                               ? Icons.pause_rounded
@@ -2697,7 +2832,7 @@ class _VideoPlayerModalState extends State<VideoPlayerModal>
                               child: Container(
                                 width:
                                     (MediaQuery.of(context).size.width - 52) /
-                                    2,
+                                        2,
                                 padding: const EdgeInsets.all(10),
                                 decoration: BoxDecoration(
                                   color: isActive
@@ -2832,8 +2967,7 @@ class _VideoWavePainter extends CustomPainter {
       final path = Path();
       path.moveTo(0, size.height * 0.5);
       for (double x = 0; x <= size.width; x += 2) {
-        final y =
-            size.height * 0.5 +
+        final y = size.height * 0.5 +
             math.sin(
                   (x / size.width * 4 * math.pi) +
                       (progress * math.pi * 2) +
@@ -2873,8 +3007,7 @@ class _WavePainter extends CustomPainter {
       final offset = i * 30.0;
       path.moveTo(0, size.height * 0.5);
       for (double x = 0; x <= size.width; x += 1) {
-        final y =
-            size.height * 0.5 +
+        final y = size.height * 0.5 +
             math.sin(
                   (x / size.width * 4 * math.pi) +
                       (progress * math.pi * 2) +
@@ -3241,15 +3374,15 @@ class _MissionStartScreenState extends State<MissionStartScreen> {
                           color: done
                               ? const Color(0xFFE8F5E9)
                               : (current
-                                    ? widget.color.withOpacity(0.08)
-                                    : const Color(0xFFF8F5F0)),
+                                  ? widget.color.withOpacity(0.08)
+                                  : const Color(0xFFF8F5F0)),
                           borderRadius: BorderRadius.circular(10),
                           border: Border.all(
                             color: done
                                 ? const Color(0xFF3D7A3A).withOpacity(0.3)
                                 : (current
-                                      ? widget.color.withOpacity(0.4)
-                                      : Colors.transparent),
+                                    ? widget.color.withOpacity(0.4)
+                                    : Colors.transparent),
                           ),
                         ),
                         child: Row(
@@ -3261,8 +3394,8 @@ class _MissionStartScreenState extends State<MissionStartScreen> {
                                 color: done
                                     ? const Color(0xFF3D7A3A)
                                     : (current
-                                          ? widget.color
-                                          : const Color(0xFFD0CCC6)),
+                                        ? widget.color
+                                        : const Color(0xFFD0CCC6)),
                                 shape: BoxShape.circle,
                               ),
                               child: Center(
@@ -3293,8 +3426,8 @@ class _MissionStartScreenState extends State<MissionStartScreen> {
                                   color: done
                                       ? const Color(0xFF3D7A3A)
                                       : (current
-                                            ? const Color(0xFF1A1A1A)
-                                            : const Color(0xFF666660)),
+                                          ? const Color(0xFF1A1A1A)
+                                          : const Color(0xFF666660)),
                                   fontWeight: current
                                       ? FontWeight.w700
                                       : FontWeight.w500,
@@ -4245,8 +4378,8 @@ class _TrainingBlockCard extends StatelessWidget {
                 color: isInProgress
                     ? block.color.withOpacity(0.5)
                     : (isCompleted
-                          ? block.color.withOpacity(0.3)
-                          : const Color(0xFFDDD9D3)),
+                        ? block.color.withOpacity(0.3)
+                        : const Color(0xFFDDD9D3)),
                 width: isInProgress ? 2 : 1,
               ),
               boxShadow: [
@@ -5368,13 +5501,13 @@ class _BasicDetailScreenState extends State<BasicDetailScreen> {
         ),
         const SizedBox(height: 16),
         ...videos.asMap().entries.map(
-          (e) => AnimatedVideoPlayer(
-            video: e.value,
-            color: widget.block.color,
-            initialCompleted: _completedVideos.contains(e.key),
-            onCompleted: () => setState(() => _completedVideos.add(e.key)),
-          ),
-        ),
+              (e) => AnimatedVideoPlayer(
+                video: e.value,
+                color: widget.block.color,
+                initialCompleted: _completedVideos.contains(e.key),
+                onCompleted: () => setState(() => _completedVideos.add(e.key)),
+              ),
+            ),
         const SizedBox(height: 20),
         _MissionsSection(block: widget.block),
       ],
@@ -5731,13 +5864,13 @@ class _SurvivalDetailScreenState extends State<SurvivalDetailScreen> {
         ),
         const SizedBox(height: 12),
         ...videos.asMap().entries.map(
-          (e) => AnimatedVideoPlayer(
-            video: e.value,
-            color: widget.block.color,
-            initialCompleted: _completedVideos.contains(e.key),
-            onCompleted: () => setState(() => _completedVideos.add(e.key)),
-          ),
-        ),
+              (e) => AnimatedVideoPlayer(
+                video: e.value,
+                color: widget.block.color,
+                initialCompleted: _completedVideos.contains(e.key),
+                onCompleted: () => setState(() => _completedVideos.add(e.key)),
+              ),
+            ),
         const SizedBox(height: 20),
         _MissionsSection(block: widget.block),
       ],
@@ -5826,14 +5959,15 @@ class _PuzzleDetailScreenState extends State<PuzzleDetailScreen> {
         ),
         const SizedBox(height: 16),
         ...survivalPuzzles.asMap().entries.map(
-          (e) => _PuzzleCard(
-            puzzle: e.value,
-            index: e.key,
-            color: widget.block.color,
-            score: _scores[e.key],
-            onScoreUpdated: (score) => setState(() => _scores[e.key] = score),
-          ),
-        ),
+              (e) => _PuzzleCard(
+                puzzle: e.value,
+                index: e.key,
+                color: widget.block.color,
+                score: _scores[e.key],
+                onScoreUpdated: (score) =>
+                    setState(() => _scores[e.key] = score),
+              ),
+            ),
       ],
     );
   }
@@ -5891,7 +6025,7 @@ class _PuzzleCardState extends State<_PuzzleCard> {
         border: Border.all(
           color: attempted
               ? (passed ? const Color(0xFF3D7A3A) : const Color(0xFFD94035))
-                    .withOpacity(0.3)
+                  .withOpacity(0.3)
               : const Color(0xFFE8E4DF),
         ),
         boxShadow: [
@@ -5946,11 +6080,10 @@ class _PuzzleCardState extends State<_PuzzleCard> {
                         vertical: 3,
                       ),
                       decoration: BoxDecoration(
-                        color:
-                            (passed
-                                    ? const Color(0xFF3D7A3A)
-                                    : const Color(0xFFD94035))
-                                .withOpacity(0.1),
+                        color: (passed
+                                ? const Color(0xFF3D7A3A)
+                                : const Color(0xFFD94035))
+                            .withOpacity(0.1),
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
@@ -5994,34 +6127,32 @@ class _PuzzleCardState extends State<_PuzzleCard> {
                   ),
                   const SizedBox(height: 12),
                   ...widget.puzzle.options.asMap().entries.map(
-                    (e) => _OptionTile(
-                      label: e.value,
-                      index: e.key,
-                      selected: _selected == e.key,
-                      submitted: _submitted,
-                      isCorrect: e.key == widget.puzzle.correctIndex,
-                      onTap: _submitted
-                          ? null
-                          : () => setState(() => _selected = e.key),
-                    ),
-                  ),
+                        (e) => _OptionTile(
+                          label: e.value,
+                          index: e.key,
+                          selected: _selected == e.key,
+                          submitted: _submitted,
+                          isCorrect: e.key == widget.puzzle.correctIndex,
+                          onTap: _submitted
+                              ? null
+                              : () => setState(() => _selected = e.key),
+                        ),
+                      ),
                   const SizedBox(height: 8),
                   if (_submitted && _selected != null) ...[
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color:
-                            (_selected == widget.puzzle.correctIndex
-                                    ? const Color(0xFF3D7A3A)
-                                    : const Color(0xFFD94035))
-                                .withOpacity(0.08),
+                        color: (_selected == widget.puzzle.correctIndex
+                                ? const Color(0xFF3D7A3A)
+                                : const Color(0xFFD94035))
+                            .withOpacity(0.08),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(
-                          color:
-                              (_selected == widget.puzzle.correctIndex
-                                      ? const Color(0xFF3D7A3A)
-                                      : const Color(0xFFD94035))
-                                  .withOpacity(0.2),
+                          color: (_selected == widget.puzzle.correctIndex
+                                  ? const Color(0xFF3D7A3A)
+                                  : const Color(0xFFD94035))
+                              .withOpacity(0.2),
                         ),
                       ),
                       child: Row(
@@ -6350,14 +6481,14 @@ class MedicalDetailScreen extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         ...medicalDrills.asMap().entries.map(
-          (e) => _DrillCard(
-            drill: e.value,
-            index: e.key,
-            color: block.color,
-            completed: e.key < 2,
-            blockType: block.blockType,
-          ),
-        ),
+              (e) => _DrillCard(
+                drill: e.value,
+                index: e.key,
+                color: block.color,
+                completed: e.key < 2,
+                blockType: block.blockType,
+              ),
+            ),
         const SizedBox(height: 20),
         _MissionsSection(block: block),
         const SizedBox(height: 16),
@@ -6428,14 +6559,14 @@ class FireDetailScreen extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         ...fireDrills.asMap().entries.map(
-          (e) => _DrillCard(
-            drill: e.value,
-            index: e.key,
-            color: block.color,
-            completed: e.key < 1,
-            blockType: block.blockType,
-          ),
-        ),
+              (e) => _DrillCard(
+                drill: e.value,
+                index: e.key,
+                color: block.color,
+                completed: e.key < 1,
+                blockType: block.blockType,
+              ),
+            ),
         const SizedBox(height: 20),
         _MissionsSection(block: block),
         const SizedBox(height: 16),
@@ -6502,14 +6633,14 @@ class RescueDetailScreen extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         ...rescueDrills.asMap().entries.map(
-          (e) => _DrillCard(
-            drill: e.value,
-            index: e.key,
-            color: block.color,
-            completed: false,
-            blockType: block.blockType,
-          ),
-        ),
+              (e) => _DrillCard(
+                drill: e.value,
+                index: e.key,
+                color: block.color,
+                completed: false,
+                blockType: block.blockType,
+              ),
+            ),
         const SizedBox(height: 20),
         _MissionsSection(block: block),
         const SizedBox(height: 16),
@@ -6626,9 +6757,8 @@ class _DrillDetailScreenState extends State<DrillDetailScreen> {
                         style: TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.w700,
-                          color: selected
-                              ? Colors.white
-                              : const Color(0xFF444440),
+                          color:
+                              selected ? Colors.white : const Color(0xFF444440),
                         ),
                       ),
                     ],
@@ -6657,14 +6787,14 @@ class _DrillDetailScreenState extends State<DrillDetailScreen> {
           ),
           const SizedBox(height: 12),
           ..._drills.asMap().entries.map(
-            (e) => _DrillCard(
-              drill: e.value,
-              index: e.key,
-              color: widget.block.color,
-              completed: false,
-              blockType: 'drill',
-            ),
-          ),
+                (e) => _DrillCard(
+                  drill: e.value,
+                  index: e.key,
+                  color: widget.block.color,
+                  completed: false,
+                  blockType: 'drill',
+                ),
+              ),
         ],
       ],
     );
@@ -6785,14 +6915,14 @@ class CombinedDrillDetailScreen extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         ...combinedDrills.asMap().entries.map(
-          (e) => _DrillCard(
-            drill: e.value,
-            index: e.key,
-            color: block.color,
-            completed: false,
-            blockType: 'combined',
-          ),
-        ),
+              (e) => _DrillCard(
+                drill: e.value,
+                index: e.key,
+                color: block.color,
+                completed: false,
+                blockType: 'combined',
+              ),
+            ),
         const SizedBox(height: 20),
         _CertificateSection(color: block.color, department: 'All Departments'),
       ],
@@ -7010,57 +7140,71 @@ class _DrillCardState extends State<_DrillCard> {
                   ),
                   const SizedBox(height: 8),
                   ...widget.drill.steps.asMap().entries.map(
-                    (e) => Padding(
-                      padding: const EdgeInsets.only(bottom: 6),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Container(
-                            width: 22,
-                            height: 22,
-                            decoration: BoxDecoration(
-                              color: widget.color,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Center(
-                              child: Text(
-                                '${e.key + 1}',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700,
+                        (e) => Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                width: 22,
+                                height: 22,
+                                decoration: BoxDecoration(
+                                  color: widget.color,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Center(
+                                  child: Text(
+                                    '${e.key + 1}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              e.value,
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Color(0xFF444440),
-                                height: 1.4,
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  e.value,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Color(0xFF444440),
+                                    height: 1.4,
+                                  ),
+                                ),
                               ),
-                            ),
+                            ],
                           ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  GestureDetector(
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => GeminiChatScreen(
-                          title: widget.drill.title,
-                          topic: widget.drill.title,
-                          color: widget.color,
-                          blockType: 'drill',
                         ),
                       ),
-                    ),
+                  const SizedBox(height: 12),
+                  GestureDetector(
+                    onTap: () {
+                      // Build rich drill context so Gemini has full details to explain
+                      final drillContext = [
+                        'Drill: ${widget.drill.title}',
+                        'Department: ${widget.drill.department}',
+                        'Location: ${widget.drill.location}',
+                        'Duration: ${widget.drill.durationMin} min',
+                        'Objective: ${widget.drill.objective}',
+                        if (widget.drill.missionBrief.isNotEmpty)
+                          'Mission Brief: ${widget.drill.missionBrief}',
+                        'Steps:\n${widget.drill.steps.asMap().entries.map((e) => '  ${e.key + 1}. ${e.value}').join('\n')}',
+                        'Authorised by: ${widget.drill.authorisedPerson}',
+                      ].join('\n');
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => GeminiChatScreen(
+                            title: widget.drill.title,
+                            topic: drillContext,
+                            color: widget.color,
+                            blockType: 'drill',
+                          ),
+                        ),
+                      );
+                    },
                     child: Container(
                       width: double.infinity,
                       margin: const EdgeInsets.only(bottom: 8),
@@ -7521,13 +7665,13 @@ class _MissionsSection extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         ...block.missions.asMap().entries.map(
-          (entry) => _MissionCard(
-            mission: entry.value,
-            index: entry.key,
-            blockColor: block.color,
-            isLocked: false,
-          ),
-        ),
+              (entry) => _MissionCard(
+                mission: entry.value,
+                index: entry.key,
+                blockColor: block.color,
+                isLocked: false,
+              ),
+            ),
       ],
     );
   }
@@ -7580,8 +7724,8 @@ class _MissionCard extends StatelessWidget {
           color: mission.completed
               ? const Color(0xFF3D7A3A).withOpacity(0.3)
               : (isCert
-                    ? const Color(0xFFC79000).withOpacity(0.4)
-                    : const Color(0xFFE8E4DF)),
+                  ? const Color(0xFFC79000).withOpacity(0.4)
+                  : const Color(0xFFE8E4DF)),
         ),
         boxShadow: [
           BoxShadow(
