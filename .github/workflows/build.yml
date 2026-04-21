@@ -59,12 +59,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Make gradlew executable
-        run: chmod +x android/gradlew
+      - name: Install Gradle wrapper jar if missing
+        run: |
+          if [ ! -f android/gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "gradle-wrapper.jar missing, downloading..."
+            mkdir -p android/gradle/wrapper
+            curl -sL https://raw.githubusercontent.com/gradle/gradle/v8.10.2/gradle/wrapper/gradle-wrapper.jar \
+              -o android/gradle/wrapper/gradle-wrapper.jar
+            echo "Downloaded gradle-wrapper.jar"
+          else
+            echo "gradle-wrapper.jar found"
+          fi
 
       - name: Build APK
-        working-directory: android
-        run: ./gradlew assembleRelease --no-daemon
+        run: |
+          chmod +x android/gradlew
+          flutter build apk --release --no-tree-shake-icons
 
       - name: Find APK
         run: find . -name "*.apk" 2>/dev/null
@@ -73,4 +83,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: android/app/build/outputs/apk/release/app-release.apk
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/apk/release/app-release.apk
+            android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: warn
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
