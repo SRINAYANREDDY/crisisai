@@ -2,7 +2,7 @@ name: Build Flutter APK
 
 on:
   push:
-    branches: [main, master]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -17,14 +17,14 @@ jobs:
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: "zulu"
-          java-version: "17"
+          distribution: 'zulu'
+          java-version: '17'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.29.0"
-          channel: "stable"
+          flutter-version: '3.29.0'
+          channel: 'stable'
           cache: true
 
       - name: Create google-services.json
@@ -33,9 +33,9 @@ jobs:
       - name: Override gradle.properties for cloud build
         run: |
           cat > android/gradle.properties << 'PROPS'
-          org.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=256m
-          org.gradle.daemon=false
-          org.gradle.parallel=false
+          org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError
+          org.gradle.daemon=true
+          org.gradle.parallel=true
           org.gradle.configureondemand=false
           android.useAndroidX=true
           android.enableJetifier=true
