@@ -30,6 +30,17 @@ jobs:
       - name: Create google-services.json
         run: echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > android/app/google-services.json
 
+      - name: Override gradle.properties for cloud build
+        run: |
+          cat > android/gradle.properties << 'PROPS'
+          org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError
+          org.gradle.daemon=true
+          org.gradle.parallel=true
+          org.gradle.configureondemand=false
+          android.useAndroidX=true
+          android.enableJetifier=true
+          PROPS
+
       - name: Flutter pub get
         run: flutter pub get
 
@@ -45,8 +56,6 @@ jobs:
 
       - name: Build APK
         run: flutter build apk --release --no-tree-shake-icons
-        env:
-          GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=512m"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
