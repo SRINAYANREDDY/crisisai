@@ -33,7 +33,7 @@ jobs:
       - name: Override gradle.properties for cloud build
         run: |
           cat > android/gradle.properties << 'PROPS'
-          org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError
           org.gradle.daemon=true
           org.gradle.parallel=true
           org.gradle.configureondemand=false
