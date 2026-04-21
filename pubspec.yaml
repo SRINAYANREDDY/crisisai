@@ -20,7 +20,7 @@ dependencies:
 
   # ── Google Maps (replaces flutter_map + latlong2) ───────────────────────────
   google_maps_flutter: ^2.9.0
-  google_maps_flutter_web: ^0.6.2 # needed for Flutter Web support
+  google_maps_flutter_web: ^0.5.12+2 # downgraded for Dart 3.6 compatibility
 
   # ── Location ────────────────────────────────────────────────────────────────
   geolocator: ^13.0.2
