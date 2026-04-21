@@ -62,7 +62,7 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Build APK via Gradle directly
+      - name: Build APK
         working-directory: android
         run: ./gradlew assembleRelease --no-daemon
 
