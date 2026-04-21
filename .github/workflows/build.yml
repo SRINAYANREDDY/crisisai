@@ -54,6 +54,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
+      - name: Debug - list android files
+        run: |
+          echo "=== repo root ==="
+          ls -la
+          echo "=== android/ ==="
+          ls -la android/
+
       - name: Build APK
         run: flutter build apk --release --no-tree-shake-icons
 
