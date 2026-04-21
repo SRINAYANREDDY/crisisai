@@ -600,9 +600,9 @@ class _VolunteerProfileTabState extends State<VolunteerProfileTab> {
         'label': 'Mental Health Check-ins',
         'sub': 'View your wellbeing history',
         'onTap': () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const TraumaHistoryScreen()),
-        ),
+              context,
+              MaterialPageRoute(builder: (_) => const TraumaHistoryScreen()),
+            ),
       },
       {
         'icon': Icons.location_on_outlined,
@@ -952,9 +952,8 @@ class _VolunteerProfileTabState extends State<VolunteerProfileTab> {
                                       s,
                                       style: TextStyle(
                                         fontSize: 12,
-                                        color: selected
-                                            ? Colors.white
-                                            : _PC.text,
+                                        color:
+                                            selected ? Colors.white : _PC.text,
                                         fontWeight: selected
                                             ? FontWeight.w600
                                             : FontWeight.normal,
@@ -975,15 +974,14 @@ class _VolunteerProfileTabState extends State<VolunteerProfileTab> {
                               // Save data
                               AppData.volunteerProfile['name'] =
                                   nameCtrl.text.trim().isNotEmpty
-                                  ? nameCtrl.text.trim()
-                                  : AppData.volunteerProfile['name'];
+                                      ? nameCtrl.text.trim()
+                                      : AppData.volunteerProfile['name'];
                               AppData.volunteerProfile['contactNumber'] =
                                   contactCtrl.text.trim();
-                              AppData.volunteerProfile['age'] = ageCtrl.text
-                                  .trim();
-                              AppData.volunteerProfile['address'] = addressCtrl
-                                  .text
-                                  .trim();
+                              AppData.volunteerProfile['age'] =
+                                  ageCtrl.text.trim();
+                              AppData.volunteerProfile['address'] =
+                                  addressCtrl.text.trim();
                               AppData.volunteerProfile['gender'] =
                                   selectedGender;
                               AppData.volunteerProfile['skills'] =
@@ -991,12 +989,13 @@ class _VolunteerProfileTabState extends State<VolunteerProfileTab> {
                               final name =
                                   AppData.volunteerProfile['name'] as String;
                               final parts = name.trim().split(' ');
-                              AppData.volunteerProfile['initials'] =
-                                  parts.length >= 2
+                              AppData.volunteerProfile['initials'] = parts
+                                          .length >=
+                                      2
                                   ? '${parts[0][0]}${parts[1][0]}'.toUpperCase()
                                   : parts.isNotEmpty && parts[0].isNotEmpty
-                                  ? parts[0][0].toUpperCase()
-                                  : 'U';
+                                      ? parts[0][0].toUpperCase()
+                                      : 'U';
                               Navigator.pop(ctx);
                               setState(() {}); // refresh profile tab
                               widget.onProfileUpdated
@@ -1275,7 +1274,11 @@ class _VolunteerProfileTabState extends State<VolunteerProfileTab> {
                                     });
                                   }
                                 },
-                                activeThumbColor: _PC.teal,
+                                thumbColor: WidgetStateProperty.resolveWith(
+                                    (states) =>
+                                        states.contains(WidgetState.selected)
+                                            ? _PC.teal
+                                            : null),
                               ),
                             ],
                           ),
@@ -1365,9 +1368,8 @@ class _VolunteerProfileTabState extends State<VolunteerProfileTab> {
                               color: _PC.muted,
                             ),
                             filled: true,
-                            fillColor: autoDetect
-                                ? const Color(0xFFF0F0F0)
-                                : _PC.bg,
+                            fillColor:
+                                autoDetect ? const Color(0xFFF0F0F0) : _PC.bg,
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 14,
                               vertical: 12,
@@ -1472,9 +1474,8 @@ class _VolunteerProfileTabState extends State<VolunteerProfileTab> {
                                   '${r.round()} km',
                                   style: TextStyle(
                                     fontSize: 12,
-                                    color: radius == r
-                                        ? Colors.white
-                                        : _PC.text,
+                                    color:
+                                        radius == r ? Colors.white : _PC.text,
                                     fontWeight: radius == r
                                         ? FontWeight.w600
                                         : FontWeight.normal,
@@ -1490,11 +1491,10 @@ class _VolunteerProfileTabState extends State<VolunteerProfileTab> {
                           height: 52,
                           child: ElevatedButton(
                             onPressed: () {
-                              AppData.volunteerProfile['location'] = manualCtrl
-                                  .text
-                                  .trim();
-                              AppData.volunteerProfile['radius'] = radius
-                                  .round();
+                              AppData.volunteerProfile['location'] =
+                                  manualCtrl.text.trim();
+                              AppData.volunteerProfile['radius'] =
+                                  radius.round();
                               Navigator.pop(ctx);
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
@@ -1847,7 +1847,8 @@ class _VolunteerProfileTabState extends State<VolunteerProfileTab> {
           Switch(
             value: value,
             onChanged: onChanged,
-            activeThumbColor: _PC.teal,
+            thumbColor: WidgetStateProperty.resolveWith((states) =>
+                states.contains(WidgetState.selected) ? _PC.teal : null),
           ),
         ],
       ),
@@ -2804,13 +2805,12 @@ class _AuthorisedPersonProfileTabState
                         onPressed: () {
                           AppData.authorisedProfile['name'] =
                               nameCtrl.text.trim().isNotEmpty
-                              ? nameCtrl.text.trim()
-                              : officer['name'];
+                                  ? nameCtrl.text.trim()
+                                  : officer['name'];
                           AppData.authorisedProfile['contactNumber'] =
                               contactCtrl.text.trim();
-                          AppData.authorisedProfile['department'] = deptCtrl
-                              .text
-                              .trim();
+                          AppData.authorisedProfile['department'] =
+                              deptCtrl.text.trim();
                           AppData.authorisedProfile['jurisdiction'] =
                               jurisdictionCtrl.text.trim();
                           final name =
@@ -2818,10 +2818,10 @@ class _AuthorisedPersonProfileTabState
                           final parts = name.trim().split(' ');
                           AppData.authorisedProfile['initials'] =
                               parts.length >= 2
-                              ? '${parts[0][0]}${parts[1][0]}'.toUpperCase()
-                              : parts.isNotEmpty && parts[0].isNotEmpty
-                              ? parts[0][0].toUpperCase()
-                              : 'OF';
+                                  ? '${parts[0][0]}${parts[1][0]}'.toUpperCase()
+                                  : parts.isNotEmpty && parts[0].isNotEmpty
+                                      ? parts[0][0].toUpperCase()
+                                      : 'OF';
                           Navigator.pop(context);
                           setState(() {});
                         },
@@ -3083,7 +3083,11 @@ class _AuthorisedPersonProfileTabState
                                     });
                                   }
                                 },
-                                activeThumbColor: _PC.blue,
+                                thumbColor: WidgetStateProperty.resolveWith(
+                                    (states) =>
+                                        states.contains(WidgetState.selected)
+                                            ? _PC.blue
+                                            : null),
                               ),
                             ],
                           ),
@@ -3172,9 +3176,8 @@ class _AuthorisedPersonProfileTabState
                               color: _PC.muted,
                             ),
                             filled: true,
-                            fillColor: autoDetect
-                                ? const Color(0xFFF0F0F0)
-                                : _PC.bg,
+                            fillColor:
+                                autoDetect ? const Color(0xFFF0F0F0) : _PC.bg,
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 14,
                               vertical: 12,
@@ -3244,11 +3247,10 @@ class _AuthorisedPersonProfileTabState
                           height: 52,
                           child: ElevatedButton(
                             onPressed: () {
-                              AppData.authorisedProfile['location'] = manualCtrl
-                                  .text
-                                  .trim();
-                              AppData.authorisedProfile['radius'] = radius
-                                  .round();
+                              AppData.authorisedProfile['location'] =
+                                  manualCtrl.text.trim();
+                              AppData.authorisedProfile['radius'] =
+                                  radius.round();
                               Navigator.pop(ctx);
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
@@ -3435,7 +3437,11 @@ class _AuthorisedPersonProfileTabState
                                 value: locationAccess,
                                 onChanged: (v) =>
                                     setModalState(() => locationAccess = v),
-                                activeThumbColor: _PC.blue,
+                                thumbColor: WidgetStateProperty.resolveWith(
+                                    (states) =>
+                                        states.contains(WidgetState.selected)
+                                            ? _PC.blue
+                                            : null),
                               ),
                             ],
                           ),
@@ -3479,7 +3485,11 @@ class _AuthorisedPersonProfileTabState
                                 value: profileVisible,
                                 onChanged: (v) =>
                                     setModalState(() => profileVisible = v),
-                                activeThumbColor: _PC.blue,
+                                thumbColor: WidgetStateProperty.resolveWith(
+                                    (states) =>
+                                        states.contains(WidgetState.selected)
+                                            ? _PC.blue
+                                            : null),
                               ),
                             ],
                           ),
