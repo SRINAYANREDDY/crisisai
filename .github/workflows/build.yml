@@ -59,14 +59,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Build APK
-        run: flutter build apk --release --no-tree-shake-icons
+      - name: Build APK via Gradle directly
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon
 
       - name: Find APK
-        run: find build -name "*.apk" 2>/dev/null
+        run: find . -name "*.apk" 2>/dev/null
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: build/app/outputs/apk/release/app-release.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
