@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.crisisai"
+    namespace = "com.example.crisis_ai"
     compileSdk = 36
     ndkVersion = "28.2.13676358"
 
@@ -21,7 +21,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.crisisai"
+        applicationId = "com.example.crisis_ai"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
